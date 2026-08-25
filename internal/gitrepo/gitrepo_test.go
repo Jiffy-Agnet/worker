@@ -36,9 +36,16 @@ func TestRepoHost(t *testing.T) {
 	}
 }
 
-func TestAuthArgsEmptyWithoutCredential(t *testing.T) {
-	if got := authArgs(EnsureOptions{RepoURL: "https://github.com/owner/repo.git"}); got != nil {
-		t.Errorf("authArgs with no credential = %v, want nil", got)
+func TestAuthArgsEmptyWithoutToken(t *testing.T) {
+	if got := authArgs(EnsureOptions{RepoURL: "https://github.com/owner/repo.git", Username: "x-access-token"}); got != nil {
+		t.Errorf("authArgs with no token = %v, want nil", got)
+	}
+}
+
+func TestBasicAuthHeader(t *testing.T) {
+	got := basicAuthHeader("alice", "secret")
+	if got == "" || got == "Authorization: basic " {
+		t.Errorf("basicAuthHeader produced an empty/incomplete header: %q", got)
 	}
 }
 

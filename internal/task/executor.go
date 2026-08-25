@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/Jiffy-Agnet/worker/internal/callback"
 	"github.com/Jiffy-Agnet/worker/internal/config"
@@ -22,20 +24,46 @@ import (
 const TypeExecute = "jiffy:execute"
 
 // Descriptor is the JSON contract published by the producer on the shared
-// Redis Stream. It is intentionally independent of both Celery's and
-// asynq's own message formats — see the ADR, "Dispatch protocol".
+// Redis Stream. This mirrors the producer's actual payload exactly —
+// there is no separate active-branch, sandbox-image, or system-prompt
+// field: branch handling is entirely the code agent's job (see the
+// repo's own AGENTS.md for its instructions), and the sandbox image is a
+// Worker-level default (see config.Config.SandboxImage).
 type Descriptor struct {
-	SchemaVersion  int               `json:"schema_version"`
-	IssueID        string            `json:"issue_id"`
-	RepoURL        string            `json:"repo_url"`
-	Credential     string            `json:"credential"` // short-lived, narrowly-scoped
-	ActiveBranch   string            `json:"active_branch"`
-	TaskText       string            `json:"task_text"`
-	SystemPrompt   string            `json:"system_prompt"`
-	SandboxImage   string            `json:"sandbox_image"`
-	SandboxEnv     map[string]string `json:"sandbox_env"`
-	ProjectLockKey string            `json:"project_lock_key,omitempty"` // see ADR item 6
-	CallbackURL    string            `json:"callback_url"`
+	Repo     RepoInfo     `json:"repo"`
+	Issue    IssueInfo    `json:"issue"`
+	Callback CallbackInfo `json:"callback"`
+}
+
+// RepoInfo carries the repository location and a short-lived credential
+// scoped to this task. Never persisted to the shared mirror cache (see
+// internal/gitrepo) — only into this task's own ephemeral working copy.
+type RepoInfo struct {
+	URL      string `json:"url"`
+	Token    string `json:"token"`
+	Username string `json:"username"`
+}
+
+// IssueInfo is the Issue's own text plus its full comment thread. The
+// code agent's task content is composed directly from this.
+type IssueInfo struct {
+	Text            string      `json:"text"`
+	Turns           []IssueTurn `json:"turns"`
+	ExternalIssueID string      `json:"external_issue_id"`
+}
+
+// IssueTurn is a single comment in the Issue's thread.
+type IssueTurn struct {
+	Role      string    `json:"role"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CallbackInfo is where and how to report the result.
+type CallbackInfo struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
 }
 
 type Executor struct {
@@ -46,8 +74,7 @@ func NewExecutor(cfg *config.Config) *Executor {
 	return &Executor{cfg: cfg}
 }
 
-// HandleAsynqTask implements the 5-step flow from the ADR's "Task execution
-// flow" section. Each step below is a stub to be filled in.
+// HandleAsynqTask implements the Task execution flow from the ADR.
 func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	var d Descriptor
 	if err := json.Unmarshal(t.Payload(), &d); err != nil {
@@ -63,29 +90,21 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	// so it never lingers or gets confused with another task's copy.
 	defer os.RemoveAll(repoDir)
 
-	sandboxEnv := e.checkoutAndConfigure(d)
-
-	taskFile, promptFile, err := e.writeTaskFiles(d)
+	taskFile, err := e.writeTaskFile(d)
 	if err != nil {
-		return e.reportFailure(ctx, d, fmt.Errorf("write /tmp files: %w", err))
+		return e.reportFailure(ctx, d, fmt.Errorf("write task file: %w", err))
 	}
-	// These carry the task/prompt content for exactly this one run; clean
-	// them up once we're done regardless of outcome, so a busy Worker
-	// doesn't accumulate them under /tmp over time.
 	defer os.Remove(taskFile)
-	defer os.Remove(promptFile)
 
 	if err := e.runPreSetupScript(ctx, repoDir, d); err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("pre-setup script: %w", err))
 	}
 
 	result, err := sandbox.Run(ctx, sandbox.RunOptions{
-		Image:       d.SandboxImage,
+		Image:       e.cfg.SandboxImage,
 		RepoDir:     repoDir,
-		Env:         sandboxEnv,
 		TaskFile:    taskFile,
-		PromptFile:  promptFile,
-		IssueID:     d.IssueID,
+		IssueID:     d.Issue.ExternalIssueID,
 		MemoryLimit: e.cfg.SandboxMemoryLimit,
 		CPULimit:    e.cfg.SandboxCPULimit,
 	})
@@ -93,20 +112,22 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 		return e.reportFailure(ctx, d, fmt.Errorf("sandbox run: %w", err))
 	}
 
-	return callback.Report(ctx, d.CallbackURL, result)
+	return callback.Report(ctx, d.Callback.URL, d.Callback.Secret, result)
 }
 
 // Step 1: make sure a shared, up-to-date mirror of the repo exists
 // locally (fetching it if already cached), then clone a fresh, isolated
-// working copy for this task alone from that local mirror. Concurrent
-// tasks on the same repository never share a working directory this way
-// — one task's checkout, changes, or failure can never touch another's.
-// See internal/gitrepo for the implementation.
+// working copy for this task alone from that local mirror, with the
+// push/pull credential configured directly into it. Concurrent tasks on
+// the same repository never share a working directory this way — one
+// task's checkout, changes, or failure can never touch another's. See
+// internal/gitrepo for the implementation.
 func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, error) {
 	cacheDir, err := gitrepo.Ensure(ctx, gitrepo.EnsureOptions{
-		RepoURL:    d.RepoURL,
-		Credential: d.Credential,
-		CacheDir:   e.cfg.RepoCacheDir,
+		RepoURL:  d.Repo.URL,
+		Username: d.Repo.Username,
+		Token:    d.Repo.Token,
+		CacheDir: e.cfg.RepoCacheDir,
 	})
 	if err != nil {
 		return "", err
@@ -116,55 +137,46 @@ func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, err
 	if err != nil {
 		return "", fmt.Errorf("prepare task working copy: %w", err)
 	}
-	if err := gitrepo.NewWorkingCopy(ctx, cacheDir, d.RepoURL, workDir); err != nil {
+	if err := gitrepo.NewWorkingCopy(ctx, cacheDir, d.Repo.URL, d.Repo.Username, d.Repo.Token, workDir); err != nil {
 		_ = os.RemoveAll(workDir)
 		return "", err
 	}
 	return workDir, nil
 }
 
-// Step 2: configure the Sandbox's environment variables for this run.
+// Step 2: compose the task content from the Issue's text and comment
+// thread, and write it to /tmp named with the external Issue ID, so the
+// code agent reads it from disk instead of CLI args/stdin — removing any
+// length limit on task content.
 //
-// Switching to (or creating) the Active Branch — and everything after
-// that, commit/push/PR creation — is the code agent's own job inside the
-// sandbox, driven by the task and system prompt. Worker doesn't run git
-// checkout itself; it just makes sure the agent has what it needs to do
-// that: which branch to work with, and the credential to push with.
-func (e *Executor) checkoutAndConfigure(d Descriptor) map[string]string {
-	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch, d.Credential)
+// There's no separate system-prompt file: project-specific agent
+// instructions live in the repository's own AGENTS.md, which the agent
+// reads directly from the mounted working copy at /workspace.
+func (e *Executor) writeTaskFile(d Descriptor) (string, error) {
+	taskFile := filepath.Join("/tmp", fmt.Sprintf("jiffy-task-%s.md", d.Issue.ExternalIssueID))
+	content := composeTaskText(d.Issue)
+	if err := os.WriteFile(taskFile, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("write task file: %w", err)
+	}
+	return taskFile, nil
 }
 
-// mergeSandboxEnv layers well-known Worker-provided variables on top of
-// the descriptor's own SandboxEnv, without mutating the caller's map.
-func mergeSandboxEnv(base map[string]string, activeBranch, credential string) map[string]string {
-	env := make(map[string]string, len(base)+2)
-	for k, v := range base {
-		env[k] = v
+// composeTaskText renders the Issue's own text followed by its comment
+// thread, in chronological order, as a single markdown document.
+func composeTaskText(issue IssueInfo) string {
+	var b strings.Builder
+	b.WriteString(issue.Text)
+	if len(issue.Turns) > 0 {
+		b.WriteString("\n\n## Conversation\n")
+		for _, turn := range issue.Turns {
+			fmt.Fprintf(&b, "\n### %s (%s) — %s\n%s\n",
+				turn.Author, turn.Role, turn.CreatedAt.Format(time.RFC3339), turn.Body)
+		}
 	}
-	env["JIFFY_ACTIVE_BRANCH"] = activeBranch
-	env["JIFFY_GIT_CREDENTIAL"] = credential
-	return env
+	return b.String()
 }
 
-// Step 3: write the task and system prompt to /tmp, named with the Issue
-// ID, so the code agent reads them from disk instead of CLI args/stdin —
-// removing any length limit on task content.
-func (e *Executor) writeTaskFiles(d Descriptor) (taskFile, promptFile string, err error) {
-	taskFile = filepath.Join("/tmp", fmt.Sprintf("jiffy-task-%s.md", d.IssueID))
-	promptFile = filepath.Join("/tmp", fmt.Sprintf("jiffy-prompt-%s.md", d.IssueID))
-
-	if err := os.WriteFile(taskFile, []byte(d.TaskText), 0o600); err != nil {
-		return "", "", fmt.Errorf("write task file: %w", err)
-	}
-	if err := os.WriteFile(promptFile, []byte(d.SystemPrompt), 0o600); err != nil {
-		// Don't leave a half-written pair behind.
-		_ = os.Remove(taskFile)
-		return "", "", fmt.Errorf("write prompt file: %w", err)
-	}
-	return taskFile, promptFile, nil
-}
-
-// Step 4: run the project's pre-setup/entrypoint script inside the
+// Step 3: run the project's pre-setup/entrypoint script inside the
 // sandbox, if one exists, before the agent starts.
 func (e *Executor) runPreSetupScript(ctx context.Context, repoDir string, d Descriptor) error {
 	// TODO: look for a conventional path (e.g. .jiffy/pre-setup.sh) inside
@@ -173,5 +185,5 @@ func (e *Executor) runPreSetupScript(ctx context.Context, repoDir string, d Desc
 }
 
 func (e *Executor) reportFailure(ctx context.Context, d Descriptor, cause error) error {
-	return callback.ReportFailure(ctx, d.CallbackURL, cause)
+	return callback.ReportFailure(ctx, d.Callback.URL, d.Callback.Secret, cause)
 }

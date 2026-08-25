@@ -5,21 +5,24 @@
 //   - Ensure keeps one shared *mirror* clone per repository URL on disk,
 //     updated via `git fetch`. It has no working tree of its own — it
 //     exists purely so later per-task clones are fast and don't need to
-//     re-download the repository's full history every time.
+//     re-download the repository's full history every time. Nothing
+//     sensitive is persisted here: the credential is passed as a
+//     per-command HTTP Authorization header override, never written to
+//     this shared, long-lived cache's own .git/config.
 //   - NewWorkingCopy clones a fresh, fully independent working directory
 //     for a single task, sourced from that local mirror (no network
 //     needed). Concurrent tasks on the same repository never share a
 //     working directory this way, so one task's checkout, changes, or
-//     failure can never touch another's.
+//     failure can never touch another's. Because this working copy is
+//     single-task and removed once the task finishes, the credential
+//     *is* configured directly into its .git/config here — so the code
+//     agent can run plain `git push`/`git pull` without ever needing to
+//     know the token itself.
 //
-// Switching to (or creating) the Active Branch, and everything after
-// that — commits, push, PR creation — is the code agent's own job inside
-// the sandbox, driven by the task and system prompt.
-//
-// The short-lived credential passed in per task is never written to
-// .git/config or embedded in the remote URL. It is supplied as a
-// per-command HTTP Authorization header override, so nothing sensitive
-// persists in the on-disk cache between tasks.
+// Switching to (or creating) a branch, and everything after that —
+// commits, push, PR creation — is the code agent's own job inside the
+// sandbox, driven by the task content and the repository's own
+// AGENTS.md.
 package gitrepo
 
 import (
@@ -40,9 +43,10 @@ type EnsureOptions struct {
 	// RepoURL is the repository's HTTPS clone URL, e.g.
 	// "https://github.com/owner/repo.git".
 	RepoURL string
-	// Credential is a short-lived, narrowly-scoped access token (e.g. a
-	// GitHub App installation token). Never persisted to disk.
-	Credential string
+	// Username and Token are the short-lived credential for this task.
+	// Never persisted to this shared cache's .git/config.
+	Username string
+	Token    string
 	// CacheDir is the base directory under which the shared mirror is
 	// cached between tasks. Optional — defaults to a subdirectory of
 	// os.TempDir().
@@ -80,17 +84,25 @@ func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 }
 
 // NewWorkingCopy creates a fresh, isolated local clone at dir, sourced
-// from the shared mirror cache rather than the network — fast, and no
-// credential needed for this step. origin is then repointed at the real
-// repoURL (the mirror is purely a local optimization) so the code agent
-// can push its work to the actual remote. The caller owns dir and should
-// remove it once the task is done.
-func NewWorkingCopy(ctx context.Context, cacheDir, repoURL, dir string) error {
+// from the shared mirror cache rather than the network. origin is then
+// repointed at the real repoURL, and — since this working copy is
+// single-task and gets deleted afterward — the push/pull credential is
+// configured directly into its .git/config, so the code agent can run
+// plain git commands without ever handling the token itself. The caller
+// owns dir and should remove it once the task is done.
+func NewWorkingCopy(ctx context.Context, cacheDir, repoURL, username, token, dir string) error {
 	if err := run(ctx, "clone", cacheDir, dir); err != nil {
 		return fmt.Errorf("gitrepo: create working copy: %w", err)
 	}
 	if err := run(ctx, "-C", dir, "remote", "set-url", "origin", repoURL); err != nil {
 		return fmt.Errorf("gitrepo: point working copy at real remote: %w", err)
+	}
+	if token != "" {
+		host := repoHost(repoURL)
+		key := fmt.Sprintf("http.https://%s/.extraHeader", host)
+		if err := run(ctx, "-C", dir, "config", key, basicAuthHeader(username, token)); err != nil {
+			return fmt.Errorf("gitrepo: configure push credential: %w", err)
+		}
 	}
 	return nil
 }
@@ -114,16 +126,21 @@ func fetchAll(ctx context.Context, dir string, opts EnsureOptions) error {
 
 // authArgs injects the credential as a per-command HTTP Authorization
 // header override instead of embedding it in the remote URL or writing it
-// into .git/config, so it never persists on disk between tasks.
+// into .git/config, so it never persists on disk in the shared mirror
+// cache between tasks.
 func authArgs(opts EnsureOptions) []string {
-	if opts.Credential == "" {
+	if opts.Token == "" {
 		return nil
 	}
 	host := repoHost(opts.RepoURL)
-	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + opts.Credential))
 	return []string{
-		"-c", fmt.Sprintf("http.https://%s/.extraHeader=Authorization: basic %s", host, basic),
+		"-c", fmt.Sprintf("http.https://%s/.extraHeader=%s", host, basicAuthHeader(opts.Username, opts.Token)),
 	}
+}
+
+func basicAuthHeader(username, token string) string {
+	basic := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+	return fmt.Sprintf("Authorization: basic %s", basic)
 }
 
 func repoHost(repoURL string) string {

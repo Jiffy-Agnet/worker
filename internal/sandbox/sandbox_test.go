@@ -19,10 +19,9 @@ func TestRunFailsClearlyWhenTaskFileMissing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.md")
 
 	_, err := Run(context.Background(), RunOptions{
-		Image:      "irrelevant:latest",
-		IssueID:    "1",
-		TaskFile:   missing,
-		PromptFile: missing,
+		Image:    "irrelevant:latest",
+		IssueID:  "1",
+		TaskFile: missing,
 	})
 	if err == nil {
 		t.Fatal("expected an error for a missing task file, got nil")

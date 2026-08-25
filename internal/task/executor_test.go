@@ -2,79 +2,69 @@ package task
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestWriteTaskFiles(t *testing.T) {
+func TestWriteTaskFile(t *testing.T) {
 	e := &Executor{}
 	d := Descriptor{
-		IssueID:      "99",
-		TaskText:     "do the thing",
-		SystemPrompt: "you are a helpful agent",
+		Issue: IssueInfo{
+			Text:            "do the thing",
+			ExternalIssueID: "99",
+			Turns: []IssueTurn{
+				{
+					Role:      "user",
+					Author:    "lo0ser",
+					Body:      "please hurry",
+					CreatedAt: time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC),
+				},
+			},
+		},
 	}
 
-	taskFile, promptFile, err := e.writeTaskFiles(d)
+	taskFile, err := e.writeTaskFile(d)
 	if err != nil {
-		t.Fatalf("writeTaskFiles: %v", err)
+		t.Fatalf("writeTaskFile: %v", err)
 	}
 	defer os.Remove(taskFile)
-	defer os.Remove(promptFile)
 
 	if want := "/tmp/jiffy-task-99.md"; taskFile != want {
 		t.Errorf("taskFile = %q, want %q", taskFile, want)
 	}
-	if want := "/tmp/jiffy-prompt-99.md"; promptFile != want {
-		t.Errorf("promptFile = %q, want %q", promptFile, want)
-	}
 
-	gotTask, err := os.ReadFile(taskFile)
+	got, err := os.ReadFile(taskFile)
 	if err != nil {
 		t.Fatalf("read task file: %v", err)
 	}
-	if string(gotTask) != d.TaskText {
-		t.Errorf("task file content = %q, want %q", gotTask, d.TaskText)
+	if !strings.Contains(string(got), "do the thing") {
+		t.Errorf("task file missing issue text: %q", got)
 	}
-
-	gotPrompt, err := os.ReadFile(promptFile)
-	if err != nil {
-		t.Fatalf("read prompt file: %v", err)
-	}
-	if string(gotPrompt) != d.SystemPrompt {
-		t.Errorf("prompt file content = %q, want %q", gotPrompt, d.SystemPrompt)
+	if !strings.Contains(string(got), "please hurry") {
+		t.Errorf("task file missing turn body: %q", got)
 	}
 }
 
-func TestWriteTaskFilesNamesIncludeIssueID(t *testing.T) {
-	e := &Executor{}
-	taskFile, promptFile, err := e.writeTaskFiles(Descriptor{IssueID: "abc123"})
-	if err != nil {
-		t.Fatalf("writeTaskFiles: %v", err)
-	}
-	defer os.Remove(taskFile)
-	defer os.Remove(promptFile)
-
-	if want := "/tmp/jiffy-task-abc123.md"; taskFile != want {
-		t.Errorf("taskFile = %q, want %q", taskFile, want)
-	}
-	if want := "/tmp/jiffy-prompt-abc123.md"; promptFile != want {
-		t.Errorf("promptFile = %q, want %q", promptFile, want)
+func TestComposeTaskTextWithoutTurns(t *testing.T) {
+	got := composeTaskText(IssueInfo{Text: "just the text"})
+	if got != "just the text" {
+		t.Errorf("composeTaskText = %q, want %q", got, "just the text")
 	}
 }
 
-func TestMergeSandboxEnv(t *testing.T) {
-	base := map[string]string{"FOO": "bar"}
-	got := mergeSandboxEnv(base, "develop", "sekret-token")
-
-	if got["FOO"] != "bar" {
-		t.Errorf(`env["FOO"] = %q, want "bar"`, got["FOO"])
+func TestComposeTaskTextIncludesAllTurns(t *testing.T) {
+	issue := IssueInfo{
+		Text: "main text",
+		Turns: []IssueTurn{
+			{Role: "user", Author: "a", Body: "first turn"},
+			{Role: "user", Author: "b", Body: "second turn"},
+		},
 	}
-	if got["JIFFY_ACTIVE_BRANCH"] != "develop" {
-		t.Errorf(`env["JIFFY_ACTIVE_BRANCH"] = %q, want "develop"`, got["JIFFY_ACTIVE_BRANCH"])
-	}
-	if got["JIFFY_GIT_CREDENTIAL"] != "sekret-token" {
-		t.Errorf(`env["JIFFY_GIT_CREDENTIAL"] = %q, want "sekret-token"`, got["JIFFY_GIT_CREDENTIAL"])
-	}
-	if _, mutated := base["JIFFY_ACTIVE_BRANCH"]; mutated {
-		t.Error("mergeSandboxEnv mutated the caller's base map")
+	got := composeTaskText(issue)
+	for _, want := range []string{"main text", "first turn", "second turn"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("composeTaskText missing %q in output: %q", want, got)
+		}
 	}
 }

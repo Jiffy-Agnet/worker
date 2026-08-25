@@ -14,17 +14,16 @@ import (
 )
 
 // containerWorkspace is the fixed path inside the sandbox where the
-// cloned repository is mounted.
+// cloned repository is mounted. The code agent finds the project's own
+// AGENTS.md here directly — Worker never copies it anywhere separately.
 const containerWorkspace = "/workspace"
 
 // RunOptions describes a single sandbox execution.
 type RunOptions struct {
-	Image      string
-	RepoDir    string
-	Env        map[string]string
-	TaskFile   string
-	PromptFile string
-	IssueID    string
+	Image    string
+	RepoDir  string
+	TaskFile string
+	IssueID  string
 
 	// MemoryLimit and CPULimit are passed straight to `docker run` as
 	// --memory and --cpus. Leave empty to use the Docker daemon's
@@ -46,13 +45,13 @@ type Result struct {
 // Run pulls the pre-built registry image — never building it locally —
 // and runs the code agent inside it.
 //
-// The task, system-prompt, and result files are bind-mounted
-// individually at the same absolute path inside the container as on the
-// host, rather than mounting the whole host /tmp: with more than one
-// sandbox running concurrently on the same Worker, a shared /tmp mount
-// would let one task's container see (and touch) another task's files,
-// which breaks the isolated-execution guarantee. Mounting each file by
-// its own path keeps every container's view limited to its own task.
+// The task and result files are bind-mounted individually at the same
+// absolute path inside the container as on the host, rather than
+// mounting the whole host /tmp: with more than one sandbox running
+// concurrently on the same Worker, a shared /tmp mount would let one
+// task's container see (and touch) another task's files, which breaks
+// the isolated-execution guarantee. Mounting each file by its own path
+// keeps every container's view limited to its own task.
 func Run(ctx context.Context, opts RunOptions) (Result, error) {
 	if opts.Image == "" {
 		return Result{}, fmt.Errorf("sandbox: image is required")
@@ -64,14 +63,8 @@ func Run(ctx context.Context, opts RunOptions) (Result, error) {
 	// A bind-mount source path that doesn't exist yet gets silently
 	// turned into an empty directory by Docker, which then fails much
 	// later in a confusing way — check up front and fail clearly instead.
-	checks := []struct{ name, path string }{
-		{"task file", opts.TaskFile},
-		{"prompt file", opts.PromptFile},
-	}
-	for _, c := range checks {
-		if _, err := os.Stat(c.path); err != nil {
-			return Result{}, fmt.Errorf("sandbox: %s not found at %s: %w", c.name, c.path, err)
-		}
+	if _, err := os.Stat(opts.TaskFile); err != nil {
+		return Result{}, fmt.Errorf("sandbox: task file not found at %s: %w", opts.TaskFile, err)
 	}
 
 	if err := pullImage(ctx, opts.Image); err != nil {
@@ -103,11 +96,9 @@ func runContainer(ctx context.Context, opts RunOptions, resultFile string) error
 		"run", "--rm",
 		"-v", fmt.Sprintf("%s:%s", opts.RepoDir, containerWorkspace),
 		"-v", fmt.Sprintf("%s:%s:ro", opts.TaskFile, opts.TaskFile),
-		"-v", fmt.Sprintf("%s:%s:ro", opts.PromptFile, opts.PromptFile),
 		"-v", fmt.Sprintf("%s:%s", resultFile, resultFile),
 		"-e", fmt.Sprintf("JIFFY_REPO_DIR=%s", containerWorkspace),
 		"-e", fmt.Sprintf("JIFFY_TASK_FILE=%s", opts.TaskFile),
-		"-e", fmt.Sprintf("JIFFY_PROMPT_FILE=%s", opts.PromptFile),
 		"-e", fmt.Sprintf("JIFFY_RESULT_FILE=%s", resultFile),
 	}
 
@@ -116,9 +107,6 @@ func runContainer(ctx context.Context, opts RunOptions, resultFile string) error
 	}
 	if opts.CPULimit != "" {
 		args = append(args, "--cpus", opts.CPULimit)
-	}
-	for k, v := range opts.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 
 	args = append(args, opts.Image)
