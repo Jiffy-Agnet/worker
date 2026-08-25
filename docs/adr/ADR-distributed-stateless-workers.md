@@ -122,6 +122,15 @@ Carried over from the previous sandbox implementation's configuration surface:
 
 **Decision:** configure into the working copy's `.git/config`, since it is single-task and deleted afterward — safe in a way it would not be for the shared mirror cache.
 
+### Callback authentication
+
+| Dimension | HMAC signature header | Custom secret header | Bearer token (chosen) |
+|---|---|---|---|
+| Producer-side complexity | Must recompute and compare a signature | Simple string comparison | Simple string comparison, standard HTTP semantics |
+| Familiarity | Common for public webhooks (e.g. GitHub) | Ad hoc | Standard `Authorization` header, widely supported by HTTP tooling |
+
+**Decision:** the callback secret is sent as-is, as a Bearer token in the `Authorization` header.
+
 ## Consequences
 
 **Easier:**
@@ -146,6 +155,6 @@ Carried over from the previous sandbox implementation's configuration surface:
 5. [ ] Add multi-arch (`buildx`) build step to the sandbox image CI pipeline.
 6. [ ] Harden Redis: TLS + auth for remote Worker connections.
 7. [ ] Implement sibling-PR conflict resolution in the Orchestrator, with Human Review tagging as fallback.
-8. [ ] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret`.
+8. [x] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret` (sent as a Bearer token).
 9. [ ] Add retry handling with a bounded attempt count, reporting final failure via callback after the limit is reached.
 10. [x] Add sandbox lifecycle controls: memory-swap limit, cleanup toggle, container TTL watchdog, env-var passthrough (see item 10).
