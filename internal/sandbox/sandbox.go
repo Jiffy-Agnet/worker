@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // containerWorkspace is the fixed path inside the sandbox where the
@@ -25,12 +26,25 @@ type RunOptions struct {
 	TaskFile string
 	IssueID  string
 
-	// MemoryLimit and CPULimit are passed straight to `docker run` as
-	// --memory and --cpus. Leave empty to use the Docker daemon's
-	// defaults (no limit) — running more than one sandbox concurrently
-	// without these set is exactly what risks OOM-killing the host.
-	MemoryLimit string
-	CPULimit    string
+	MemoryLimit     string
+	MemorySwapLimit string
+	CPULimit        string
+
+	// Cleanup controls whether the container is removed on exit
+	// (`docker run --rm`). Set false to leave it running for debugging.
+	Cleanup bool
+
+	// ContainerTTL is a hard backstop on how long this container may
+	// exist, independent of Cleanup and of the task's own status inside
+	// it. 0 disables the backstop. Task execution itself has no
+	// separate time limit — this is the only thing bounding how long a
+	// container can exist.
+	ContainerTTL time.Duration
+
+	// ExtraEnv is a list of "NAME=value" pairs forwarded into the
+	// container as-is (e.g. LLM provider credentials) — see
+	// config.Config.SandboxExtraEnv for how these are resolved.
+	ExtraEnv []string
 }
 
 // Result is what gets sent back to the producer as a callback. The
@@ -92,25 +106,73 @@ func pullImage(ctx context.Context, image string) error {
 }
 
 func runContainer(ctx context.Context, opts RunOptions, resultFile string) error {
-	args := []string{
-		"run", "--rm",
+	name := containerName(opts.IssueID)
+
+	// The TTL backstop is an independent watchdog, not tied to whether
+	// the foreground `docker run` below ever returns: killing the
+	// docker CLI client on context cancellation does not reliably stop
+	// the container itself, so an explicit `docker rm -f` is the only
+	// way to guarantee this fires "regardless of the task's status
+	// inside it".
+	if opts.ContainerTTL > 0 {
+		go func() {
+			time.Sleep(opts.ContainerTTL)
+			_ = run(context.Background(), "docker", "rm", "-f", name)
+		}()
+	}
+
+	args := []string{"run", "--name", name}
+	if opts.Cleanup {
+		args = append(args, "--rm")
+	}
+	args = append(args,
 		"-v", fmt.Sprintf("%s:%s", opts.RepoDir, containerWorkspace),
 		"-v", fmt.Sprintf("%s:%s:ro", opts.TaskFile, opts.TaskFile),
 		"-v", fmt.Sprintf("%s:%s", resultFile, resultFile),
 		"-e", fmt.Sprintf("JIFFY_REPO_DIR=%s", containerWorkspace),
 		"-e", fmt.Sprintf("JIFFY_TASK_FILE=%s", opts.TaskFile),
 		"-e", fmt.Sprintf("JIFFY_RESULT_FILE=%s", resultFile),
-	}
+	)
 
 	if opts.MemoryLimit != "" {
 		args = append(args, "--memory", opts.MemoryLimit)
 	}
+	if opts.MemorySwapLimit != "" {
+		args = append(args, "--memory-swap", opts.MemorySwapLimit)
+	}
 	if opts.CPULimit != "" {
 		args = append(args, "--cpus", opts.CPULimit)
+	}
+	for _, kv := range opts.ExtraEnv {
+		args = append(args, "-e", kv)
 	}
 
 	args = append(args, opts.Image)
 	return run(ctx, "docker", args...)
+}
+
+// containerName derives a unique, Docker-safe container name so the TTL
+// watchdog (and manual debugging when Cleanup is disabled) can reliably
+// target this exact container, even if the external Issue ID contains
+// characters Docker doesn't allow in names.
+func containerName(issueID string) string {
+	return fmt.Sprintf("jiffy-sandbox-%s-%d", sanitizeForDockerName(issueID), time.Now().UnixNano())
+}
+
+func sanitizeForDockerName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "task"
+	}
+	return b.String()
 }
 
 func resultFilePath(issueID string) string {

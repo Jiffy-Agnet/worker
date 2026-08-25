@@ -101,12 +101,16 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	}
 
 	result, err := sandbox.Run(ctx, sandbox.RunOptions{
-		Image:       e.cfg.SandboxImage,
-		RepoDir:     repoDir,
-		TaskFile:    taskFile,
-		IssueID:     d.Issue.ExternalIssueID,
-		MemoryLimit: e.cfg.SandboxMemoryLimit,
-		CPULimit:    e.cfg.SandboxCPULimit,
+		Image:           e.cfg.SandboxImage,
+		RepoDir:         repoDir,
+		TaskFile:        taskFile,
+		IssueID:         d.Issue.ExternalIssueID,
+		MemoryLimit:     e.cfg.SandboxMemoryLimit,
+		MemorySwapLimit: e.cfg.SandboxMemorySwapLimit,
+		CPULimit:        e.cfg.SandboxCPULimit,
+		Cleanup:         e.cfg.SandboxCleanup,
+		ContainerTTL:    e.cfg.SandboxContainerTTL,
+		ExtraEnv:        e.cfg.SandboxExtraEnv,
 	})
 	if err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("sandbox run: %w", err))

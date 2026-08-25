@@ -82,6 +82,15 @@ When sibling PRs from parallel sub-tasks of the same phase conflict, the Orchest
 
 No separate Worker registration or heartbeat mechanism is introduced at this phase. Redis consumer-group membership is sufficient for now; may be revisited if the Admin Panel later needs finer-grained Worker health data.
 
+### 10. Sandbox lifecycle controls
+
+Carried over from the previous sandbox implementation's configuration surface:
+
+- **Memory/CPU/swap limits:** `docker run --memory`, `--memory-swap`, `--cpus`, all Worker-level config (`JIFFY_SANDBOX_MEMORY_LIMIT`, `SANDBOX_MEMORY_SWAP_LIMIT`, `JIFFY_SANDBOX_CPU_LIMIT`), unset by default.
+- **Cleanup toggle:** `JIFFY_SANDBOX_CLEANUP` (default `true`) controls whether `--rm` is used; set `false` to leave a container running for debugging.
+- **Container TTL backstop:** `SANDBOX_CONTAINER_TTL_HOURS` is a hard limit on container lifetime, independent of the cleanup toggle and of the task's own status — a container is force-removed this many hours after creation regardless. Task execution itself has no separate time limit. Implemented as an independent watchdog goroutine (`time.Sleep` + `docker rm -f`), not tied to whether the foreground `docker run` call ever returns, since killing that client process does not reliably stop the container itself. Known limitation: if Worker itself crashes or restarts, in-flight watchdogs are lost with it — there is no persistence across Worker restarts yet.
+- **Env passthrough:** `SANDBOX_ENV_PASSTHROUGH` (comma-separated names) forwards Worker's own environment variables into every sandbox container as-is — e.g. the LLM provider endpoint/key the code agent needs (`OPEN_API_BASE_URL`, `OPEN_API_KEY`), or build-tool concurrency settings. Only variable *names* are configured this way; values are read from Worker's own environment at startup, never duplicated into a second variable.
+
 ## Options Considered
 
 ### Dispatch protocol
@@ -139,3 +148,4 @@ No separate Worker registration or heartbeat mechanism is introduced at this pha
 7. [ ] Implement sibling-PR conflict resolution in the Orchestrator, with Human Review tagging as fallback.
 8. [ ] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret`.
 9. [ ] Add retry handling with a bounded attempt count, reporting final failure via callback after the limit is reached.
+10. [x] Add sandbox lifecycle controls: memory-swap limit, cleanup toggle, container TTL watchdog, env-var passthrough (see item 10).

@@ -44,7 +44,11 @@ current build-out plan.
 | `JIFFY_CALLBACK_SECRET` | — | Shared secret for authenticating callbacks to the producer |
 | `JIFFY_REPO_CACHE_DIR` | OS temp dir | Base directory for cached repo clones |
 | `JIFFY_SANDBOX_MEMORY_LIMIT` | unset (no limit) | `docker run --memory` per sandbox — size so `WORKER_CONCURRENCY x` this fits the host's RAM |
+| `SANDBOX_MEMORY_SWAP_LIMIT` | unset (no limit) | `docker run --memory-swap` per sandbox |
 | `JIFFY_SANDBOX_CPU_LIMIT` | unset (no limit) | `docker run --cpus` per sandbox |
+| `JIFFY_SANDBOX_CLEANUP` | `true` | Whether to `--rm` the container on exit; set `false` to leave it running for debugging |
+| `SANDBOX_CONTAINER_TTL_HOURS` | unset (no backstop) | Hard limit on container lifetime, independent of the cleanup setting and of task status — force-removed after this many hours regardless |
+| `SANDBOX_ENV_PASSTHROUGH` | unset | Comma-separated names of Worker's own env vars to forward into every sandbox container as-is (e.g. `OPEN_API_BASE_URL,OPEN_API_KEY`) — only names are configured here, values are read from Worker's own environment |
 
 ## Getting started
 

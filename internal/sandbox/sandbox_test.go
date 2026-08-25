@@ -39,3 +39,29 @@ func TestRunRequiresImageAndIssueID(t *testing.T) {
 		t.Error("expected an error when IssueID is empty")
 	}
 }
+
+func TestSanitizeForDockerName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"abc-123.foo_bar", "abc-123.foo_bar"},
+		{"weird/chars#here", "weird_chars_here"},
+		{"", "task"},
+	}
+	for _, c := range cases {
+		if got := sanitizeForDockerName(c.in); got != c.want {
+			t.Errorf("sanitizeForDockerName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestContainerNameIsDockerSafeAndUnique(t *testing.T) {
+	a := containerName("issue#1")
+	b := containerName("issue#1")
+	if a == b {
+		t.Error("containerName should be unique across calls even for the same issue ID")
+	}
+	for _, name := range []string{a, b} {
+		if strings.ContainsAny(name, "#/ ") {
+			t.Errorf("containerName produced an unsafe name: %q", name)
+		}
+	}
+}
