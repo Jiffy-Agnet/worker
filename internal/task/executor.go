@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/Jiffy-Agnet/worker/internal/callback"
@@ -66,6 +67,11 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("write /tmp files: %w", err))
 	}
+	// These carry the task/prompt content for exactly this one run; clean
+	// them up once we're done regardless of outcome, so a busy Worker
+	// doesn't accumulate them under /tmp over time.
+	defer os.Remove(taskFile)
+	defer os.Remove(promptFile)
 
 	if err := e.runPreSetupScript(ctx, repoDir, d); err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("pre-setup script: %w", err))
@@ -112,7 +118,15 @@ func (e *Executor) checkoutAndConfigure(ctx context.Context, repoDir string, d D
 func (e *Executor) writeTaskFiles(d Descriptor) (taskFile, promptFile string, err error) {
 	taskFile = filepath.Join("/tmp", fmt.Sprintf("jiffy-task-%s.md", d.IssueID))
 	promptFile = filepath.Join("/tmp", fmt.Sprintf("jiffy-prompt-%s.md", d.IssueID))
-	// TODO: os.WriteFile(taskFile, []byte(d.TaskText), 0o600); same for the prompt.
+
+	if err := os.WriteFile(taskFile, []byte(d.TaskText), 0o600); err != nil {
+		return "", "", fmt.Errorf("write task file: %w", err)
+	}
+	if err := os.WriteFile(promptFile, []byte(d.SystemPrompt), 0o600); err != nil {
+		// Don't leave a half-written pair behind.
+		_ = os.Remove(taskFile)
+		return "", "", fmt.Errorf("write prompt file: %w", err)
+	}
 	return taskFile, promptFile, nil
 }
 
