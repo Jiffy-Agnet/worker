@@ -58,6 +58,21 @@ type Config struct {
 	// each value is read from Worker's own environment at startup,
 	// never duplicated into another variable.
 	SandboxExtraEnv []string
+
+	// CallbackMaxAttempts and CallbackRetryBackoff control local retries
+	// of a single callback delivery (exponential backoff starting at
+	// CallbackRetryBackoff). If every local attempt fails, the report
+	// is queued on FailedCallbackStream instead of failing the task —
+	// see internal/callback.
+	CallbackMaxAttempts  int
+	CallbackRetryBackoff time.Duration
+
+	// FailedCallbackStream is the Redis Stream a callback delivery is
+	// queued on once local retries are exhausted, so the producer can
+	// retry delivery independently without Worker re-running the whole
+	// task (and its already-completed sandbox execution) just to resend
+	// a report.
+	FailedCallbackStream string
 }
 
 func Load() (*Config, error) {
@@ -93,6 +108,15 @@ func Load() (*Config, error) {
 		}
 	}
 
+	callbackMaxAttempts, err := strconv.Atoi(getenv("CALLBACK_MAX_ATTEMPTS", "3"))
+	if err != nil || callbackMaxAttempts < 1 {
+		callbackMaxAttempts = 3
+	}
+	callbackBackoffSeconds, err := strconv.Atoi(getenv("CALLBACK_RETRY_BACKOFF_SECONDS", "2"))
+	if err != nil || callbackBackoffSeconds < 1 {
+		callbackBackoffSeconds = 2
+	}
+
 	return &Config{
 		RedisAddr:              getenv("REDIS_ADDR", "127.0.0.1:6379"),
 		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
@@ -110,6 +134,9 @@ func Load() (*Config, error) {
 		SandboxCleanup:         getenv("JIFFY_SANDBOX_CLEANUP", "true") == "true",
 		SandboxContainerTTL:    ttl,
 		SandboxExtraEnv:        extraEnv,
+		CallbackMaxAttempts:    callbackMaxAttempts,
+		CallbackRetryBackoff:   time.Duration(callbackBackoffSeconds) * time.Second,
+		FailedCallbackStream:   getenv("FAILED_CALLBACK_STREAM", "jiffy:failed-callbacks"),
 	}, nil
 }
 

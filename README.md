@@ -49,6 +49,9 @@ current build-out plan.
 | `JIFFY_SANDBOX_CLEANUP` | `true` | Whether to `--rm` the container on exit; set `false` to leave it running for debugging |
 | `SANDBOX_CONTAINER_TTL_HOURS` | unset (no backstop) | Hard limit on container lifetime, independent of the cleanup setting and of task status — force-removed after this many hours regardless |
 | `SANDBOX_ENV_PASSTHROUGH` | unset | Comma-separated names of Worker's own env vars to forward into every sandbox container as-is (e.g. `OPEN_API_BASE_URL,OPEN_API_KEY`) — only names are configured here, values are read from Worker's own environment |
+| `CALLBACK_MAX_ATTEMPTS` | `3` | Local delivery attempts for a single callback before queuing it for the producer to retry |
+| `CALLBACK_RETRY_BACKOFF_SECONDS` | `2` | Base delay between local callback attempts (doubles each attempt) |
+| `FAILED_CALLBACK_STREAM` | `jiffy:failed-callbacks` | Redis Stream a callback is queued on once local retries are exhausted |
 
 ## Getting started
 

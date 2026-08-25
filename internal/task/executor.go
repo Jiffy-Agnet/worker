@@ -67,11 +67,12 @@ type CallbackInfo struct {
 }
 
 type Executor struct {
-	cfg *config.Config
+	cfg      *config.Config
+	callback *callback.Client
 }
 
 func NewExecutor(cfg *config.Config) *Executor {
-	return &Executor{cfg: cfg}
+	return &Executor{cfg: cfg, callback: callback.NewClient(cfg)}
 }
 
 // HandleAsynqTask implements the Task execution flow from the ADR.
@@ -116,7 +117,7 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 		return e.reportFailure(ctx, d, fmt.Errorf("sandbox run: %w", err))
 	}
 
-	return callback.Report(ctx, d.Callback.URL, d.Callback.Secret, result)
+	return e.callback.Report(ctx, d.Callback.URL, d.Callback.Secret, result)
 }
 
 // Step 1: make sure a shared, up-to-date mirror of the repo exists
@@ -189,5 +190,5 @@ func (e *Executor) runPreSetupScript(ctx context.Context, repoDir string, d Desc
 }
 
 func (e *Executor) reportFailure(ctx context.Context, d Descriptor, cause error) error {
-	return callback.ReportFailure(ctx, d.Callback.URL, d.Callback.Secret, cause)
+	return e.callback.ReportFailure(ctx, d.Callback.URL, d.Callback.Secret, cause)
 }

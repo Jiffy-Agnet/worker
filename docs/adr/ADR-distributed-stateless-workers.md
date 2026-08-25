@@ -131,6 +131,16 @@ Carried over from the previous sandbox implementation's configuration surface:
 
 **Decision:** the callback secret is sent as-is, as a Bearer token in the `Authorization` header.
 
+### Callback delivery failure
+
+| Dimension | Fail the whole task on delivery failure | Local retry + durable hand-off (chosen) |
+|---|---|---|
+| Cost of a transient network blip | Re-runs the entire sandbox execution just to resend a report | Retries only the HTTP call itself, a few times with backoff |
+| Cost of a sustained outage | Task retried repeatedly via asynq, each time re-running the sandbox | Queued once on a dedicated Redis Stream (`FAILED_CALLBACK_STREAM`); producer retries delivery independently |
+| Failure mode if the fallback itself fails | N/A | Surfaces as a task error (the one case this does fall back to asynq's own retry) |
+
+**Decision:** `Client.Report`/`ReportFailure` retry locally (`CALLBACK_MAX_ATTEMPTS`, exponential backoff from `CALLBACK_RETRY_BACKOFF_SECONDS`). If every local attempt fails, the report — including the original `callback.url`/`callback.secret` — is queued as JSON on `FAILED_CALLBACK_STREAM` and the task is considered done; only if that queueing itself fails does the task report an error.
+
 ## Consequences
 
 **Easier:**
@@ -156,5 +166,5 @@ Carried over from the previous sandbox implementation's configuration surface:
 6. [ ] Harden Redis: TLS + auth for remote Worker connections.
 7. [ ] Implement sibling-PR conflict resolution in the Orchestrator, with Human Review tagging as fallback.
 8. [x] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret` (sent as a Bearer token).
-9. [ ] Add retry handling with a bounded attempt count, reporting final failure via callback after the limit is reached.
+9. [x] Callback delivery retry: local retries with backoff, then durable hand-off via `FAILED_CALLBACK_STREAM` (see "Callback delivery failure"). Still open: whole-task retry policy (asynq `MaxRetry`) for failures elsewhere in the flow (clone, sandbox run, etc.).
 10. [x] Add sandbox lifecycle controls: memory-swap limit, cleanup toggle, container TTL watchdog, env-var passthrough (see item 10).
