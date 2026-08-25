@@ -29,6 +29,23 @@ current build-out plan.
 - Docker (to run the sandbox image)
 - Network access to the shared Redis instance (TLS required)
 
+## Configuration (environment variables)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REDIS_ADDR` | `127.0.0.1:6379` | Shared Redis instance (Stream + local asynq queue) |
+| `REDIS_PASSWORD` | — | Redis auth |
+| `REDIS_TLS` | `true` | Redis TLS |
+| `JIFFY_TASK_STREAM` | `jiffy:tasks` | Stream name for the Gateway<->Worker boundary |
+| `JIFFY_CONSUMER_GROUP` | `jiffy-workers` | Redis Streams consumer group |
+| `HOSTNAME` | `worker-unknown` | Consumer name within the group |
+| `WORKER_CONCURRENCY` | `1` | Max sandbox executions this Worker runs in parallel |
+| `JIFFY_SANDBOX_IMAGE` | — | Default sandbox image reference, if not set per-task |
+| `JIFFY_CALLBACK_SECRET` | — | Shared secret for authenticating callbacks to the producer |
+| `JIFFY_REPO_CACHE_DIR` | OS temp dir | Base directory for cached repo clones |
+| `JIFFY_SANDBOX_MEMORY_LIMIT` | unset (no limit) | `docker run --memory` per sandbox — size so `WORKER_CONCURRENCY x` this fits the host's RAM |
+| `JIFFY_SANDBOX_CPU_LIMIT` | unset (no limit) | `docker run --cpus` per sandbox |
+
 ## Getting started
 
 ```bash

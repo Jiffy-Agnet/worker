@@ -22,6 +22,14 @@ type Config struct {
 	SandboxImage   string
 	CallbackSecret string
 	RepoCacheDir   string
+
+	// SandboxMemoryLimit and SandboxCPULimit are passed to `docker run`
+	// as --memory/--cpus for every sandbox execution. Left unset by
+	// default (no limit) — must be set deliberately, sized so
+	// WORKER_CONCURRENCY x per-task limit fits the host's actual RAM/CPU,
+	// before raising concurrency above 1 is safe.
+	SandboxMemoryLimit string
+	SandboxCPULimit    string
 }
 
 func Load() (*Config, error) {
@@ -40,7 +48,9 @@ func Load() (*Config, error) {
 		Concurrency:    concurrency,
 		SandboxImage:   os.Getenv("JIFFY_SANDBOX_IMAGE"),
 		CallbackSecret: os.Getenv("JIFFY_CALLBACK_SECRET"),
-		RepoCacheDir:   os.Getenv("JIFFY_REPO_CACHE_DIR"),
+		RepoCacheDir:       os.Getenv("JIFFY_REPO_CACHE_DIR"),
+		SandboxMemoryLimit: os.Getenv("JIFFY_SANDBOX_MEMORY_LIMIT"),
+		SandboxCPULimit:    os.Getenv("JIFFY_SANDBOX_CPU_LIMIT"),
 	}, nil
 }
 
