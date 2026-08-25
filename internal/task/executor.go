@@ -15,6 +15,7 @@ import (
 	"github.com/Jiffy-Agnet/worker/internal/config"
 	"github.com/Jiffy-Agnet/worker/internal/gitrepo"
 	"github.com/Jiffy-Agnet/worker/internal/sandbox"
+	"github.com/Jiffy-Agnet/worker/internal/sandboxdetect"
 
 	"github.com/hibiken/asynq"
 )
@@ -97,8 +98,16 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	}
 	defer os.Remove(taskFile)
 
+	// Chooses a language-specific sandbox when the repo has a matching
+	// marker file (e.g. Cargo.toml -> rust), falling back to the
+	// generic default otherwise. Entirely configuration-driven — see
+	// internal/sandboxdetect — so the community can add support for a
+	// new language without any change here or to the task payload.
+	sandboxKey := sandboxdetect.Select(repoDir, e.cfg.SandboxDetectionRules)
+	sandboxImage := sandboxdetect.Image(sandboxKey, e.cfg.SandboxImageMap, e.cfg.SandboxImage)
+
 	result, err := sandbox.Run(ctx, sandbox.RunOptions{
-		Image:           e.cfg.SandboxImage,
+		Image:           sandboxImage,
 		RepoDir:         repoDir,
 		TaskFile:        taskFile,
 		IssueID:         d.Issue.ExternalIssueID,

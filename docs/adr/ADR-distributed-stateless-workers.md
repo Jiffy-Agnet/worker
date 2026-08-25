@@ -90,6 +90,21 @@ Carried over from the previous sandbox implementation's configuration surface:
 - **Container TTL backstop:** `SANDBOX_CONTAINER_TTL_HOURS` is a hard limit on container lifetime, independent of the cleanup toggle and of the task's own status — a container is force-removed this many hours after creation regardless. Task execution itself has no separate time limit. Implemented as an independent watchdog goroutine (`time.Sleep` + `docker rm -f`), not tied to whether the foreground `docker run` call ever returns, since killing that client process does not reliably stop the container itself. Known limitation: if Worker itself crashes or restarts, in-flight watchdogs are lost with it — there is no persistence across Worker restarts yet.
 - **Env passthrough:** `SANDBOX_ENV_PASSTHROUGH` (comma-separated names) forwards Worker's own environment variables into every sandbox container as-is — e.g. the LLM provider endpoint/key the code agent needs (`OPEN_API_BASE_URL`, `OPEN_API_KEY`), or build-tool concurrency settings. Only variable *names* are configured this way; values are read from Worker's own environment at startup, never duplicated into a second variable.
 
+### 11. Multi-sandbox selection: marker-file detection, config-driven
+
+The task payload has no field for which sandbox to use (see item 2 — it's Worker-level config, not per-task). To support language-specific sandboxes (Ruby, .NET, Rust, ...) — built by the Jiffy project or by the community — without changing the payload or Worker's code for each new language:
+
+- `SANDBOX_DETECTION`: an ordered list of `pattern=key` pairs checked against the repo root after cloning (e.g. `Gemfile=ruby,Cargo.toml=rust,*.csproj=dotnet`). First match wins.
+- `SANDBOX_IMAGE_MAP`: `key=image` pairs mapping a detected key to an actual image reference (e.g. `ruby=jiffy-sandbox-ruby:1.0.0`).
+- If no rule matches, or the matched key has no image mapped, `JIFFY_SANDBOX_IMAGE` (the generic sandbox) is used.
+
+Adding support for a new language is purely a configuration change — no Worker code change, no payload change. Detection only checks the repo root, not subdirectories: for a monorepo mixing languages, this is a best-effort heuristic that falls back to the generic sandbox, not a guarantee.
+
+**Version resolution inside a sandbox** (e.g. which Node version to run) follows a priority order, implemented in the sandbox image itself, not Worker:
+1. The project's own structured config (e.g. `package.json`'s `engines` field) — checked deterministically by the sandbox entrypoint script, since this is a well-defined structured-data lookup.
+2. An explicit mention in the task content (e.g. "use Node 22") — left to the code agent's own judgment, since reliably extracting a version from free-text is exactly the kind of task suited to the agent rather than a brittle regex.
+3. The image's baked-in default (LTS) version otherwise.
+
 ## Options Considered
 
 ### Dispatch protocol
@@ -167,3 +182,4 @@ Carried over from the previous sandbox implementation's configuration surface:
 8. [x] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret` (sent as a Bearer token).
 9. [x] Callback delivery retry: local retries with backoff, then durable hand-off via `FAILED_CALLBACK_STREAM` (see "Callback delivery failure"). Still open: whole-task retry policy (asynq `MaxRetry`) for failures elsewhere in the flow (clone, sandbox run, etc.).
 10. [x] Add sandbox lifecycle controls: memory-swap limit, cleanup toggle, container TTL watchdog, env-var passthrough (see item 10).
+11. [x] Add config-driven multi-sandbox selection (`SANDBOX_DETECTION` + `SANDBOX_IMAGE_MAP`, see item 11). Related, separate repo: `Jiffy-Agnet/generic_sandbox` implements the generic (Node/Python/Go) sandbox image and the version-resolution priority described there.

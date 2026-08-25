@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Jiffy-Agnet/worker/internal/sandboxdetect"
 )
 
 // Config holds everything the Worker needs to run. Nothing here is
@@ -74,6 +76,19 @@ type Config struct {
 	// task (and its already-completed sandbox execution) just to resend
 	// a report.
 	FailedCallbackStream string
+
+	// SandboxDetectionRules and SandboxImageMap let community-contributed
+	// sandboxes be selected purely through configuration.
+	// SandboxDetectionRules maps a marker-file glob pattern in the
+	// cloned repo root (e.g. "Cargo.toml") to a sandbox key (e.g.
+	// "rust"), checked in order; SandboxImageMap maps that key to an
+	// actual image reference. Adding support for a new language needs
+	// no Worker code change or task-payload change — just these two env
+	// vars. If no rule matches, or the matched key has no image mapped,
+	// SandboxImage (the generic default) is used. See
+	// internal/sandboxdetect.
+	SandboxDetectionRules []sandboxdetect.Rule
+	SandboxImageMap       map[string]string
 }
 
 func Load() (*Config, error) {
@@ -138,6 +153,8 @@ func Load() (*Config, error) {
 		CallbackMaxAttempts:    callbackMaxAttempts,
 		CallbackRetryBackoff:   time.Duration(callbackBackoffSeconds) * time.Second,
 		FailedCallbackStream:   getenv("FAILED_CALLBACK_STREAM", "jiffy:failed-callbacks"),
+		SandboxDetectionRules:  parseDetectionRules(os.Getenv("SANDBOX_DETECTION")),
+		SandboxImageMap:        parseImageMap(os.Getenv("SANDBOX_IMAGE_MAP")),
 	}, nil
 }
 
@@ -208,4 +225,43 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return out
+}
+
+// splitKV splits a single "key=value" entry. Uses "=" rather than ":"
+// since image references themselves contain a colon (the tag).
+func splitKV(entry string) (key, value string, ok bool) {
+	idx := strings.Index(entry, "=")
+	if idx < 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(entry[:idx]), strings.TrimSpace(entry[idx+1:]), true
+}
+
+// parseDetectionRules parses SANDBOX_DETECTION, e.g.
+// "Gemfile=ruby,Cargo.toml=rust,*.csproj=dotnet", preserving order since
+// sandboxdetect.Select checks rules in the order given.
+func parseDetectionRules(s string) []sandboxdetect.Rule {
+	var rules []sandboxdetect.Rule
+	for _, entry := range splitAndTrim(s) {
+		pattern, key, ok := splitKV(entry)
+		if !ok {
+			continue
+		}
+		rules = append(rules, sandboxdetect.Rule{Pattern: pattern, Key: key})
+	}
+	return rules
+}
+
+// parseImageMap parses SANDBOX_IMAGE_MAP, e.g.
+// "ruby=jiffy-sandbox-ruby:1.0.0,rust=jiffy-sandbox-rust:1.0.0".
+func parseImageMap(s string) map[string]string {
+	m := make(map[string]string)
+	for _, entry := range splitAndTrim(s) {
+		key, image, ok := splitKV(entry)
+		if !ok {
+			continue
+		}
+		m[key] = image
+	}
+	return m
 }

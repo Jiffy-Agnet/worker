@@ -3,6 +3,8 @@ package config
 import (
 	"reflect"
 	"testing"
+
+	"github.com/Jiffy-Agnet/worker/internal/sandboxdetect"
 )
 
 func TestSplitAndTrim(t *testing.T) {
@@ -60,5 +62,34 @@ func TestSecurityWarningsNoneForRemoteSecureRedis(t *testing.T) {
 	cfg := &Config{RedisAddr: "redis.example.com:6379", RedisTLS: true, RedisPassword: "secret"}
 	if warnings := cfg.SecurityWarnings(); len(warnings) != 0 {
 		t.Errorf("expected no warnings when TLS+password are both set, got %v", warnings)
+	}
+}
+
+func TestParseDetectionRules(t *testing.T) {
+	got := parseDetectionRules("Gemfile=ruby, Cargo.toml=rust ,*.csproj=dotnet")
+	want := []sandboxdetect.Rule{
+		{Pattern: "Gemfile", Key: "ruby"},
+		{Pattern: "Cargo.toml", Key: "rust"},
+		{Pattern: "*.csproj", Key: "dotnet"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseDetectionRules = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseDetectionRulesEmpty(t *testing.T) {
+	if got := parseDetectionRules(""); got != nil {
+		t.Errorf("parseDetectionRules(\"\") = %+v, want nil", got)
+	}
+}
+
+func TestParseImageMap(t *testing.T) {
+	got := parseImageMap("ruby=jiffy-sandbox-ruby:1.0.0,rust=jiffy-sandbox-rust:1.0.0")
+	want := map[string]string{
+		"ruby": "jiffy-sandbox-ruby:1.0.0",
+		"rust": "jiffy-sandbox-rust:1.0.0",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseImageMap = %+v, want %+v", got, want)
 	}
 }

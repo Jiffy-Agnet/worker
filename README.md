@@ -52,6 +52,8 @@ current build-out plan.
 | `CALLBACK_MAX_ATTEMPTS` | `3` | Local delivery attempts for a single callback before queuing it for the producer to retry |
 | `CALLBACK_RETRY_BACKOFF_SECONDS` | `2` | Base delay between local callback attempts (doubles each attempt) |
 | `FAILED_CALLBACK_STREAM` | `jiffy:failed-callbacks` | Redis Stream a callback is queued on once local retries are exhausted |
+| `SANDBOX_DETECTION` | unset | `pattern=key` pairs, comma-separated, checked in order against the repo root (e.g. `Gemfile=ruby,Cargo.toml=rust,*.csproj=dotnet`) — first match wins |
+| `SANDBOX_IMAGE_MAP` | unset | `key=image` pairs, comma-separated, mapping a detected key to an actual sandbox image (e.g. `ruby=jiffy-sandbox-ruby:1.0.0,rust=jiffy-sandbox-rust:1.0.0`) — falls back to `JIFFY_SANDBOX_IMAGE` if nothing matches or the key has no image mapped |
 
 ## Getting started
 
