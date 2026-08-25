@@ -10,6 +10,7 @@ import (
 
 	"github.com/Jiffy-Agnet/worker/internal/callback"
 	"github.com/Jiffy-Agnet/worker/internal/config"
+	"github.com/Jiffy-Agnet/worker/internal/gitrepo"
 	"github.com/Jiffy-Agnet/worker/internal/sandbox"
 
 	"github.com/hibiken/asynq"
@@ -85,11 +86,14 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 }
 
 // Step 1: if the repo is already cloned locally, `git pull` it; otherwise
-// clone fresh using the short-lived credential from the descriptor.
+// clone fresh using the short-lived credential from the descriptor. See
+// internal/gitrepo for the implementation.
 func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, error) {
-	// TODO: check a local cache directory keyed by d.RepoURL. If present,
-	// `cd` in and `git pull`. Otherwise `git clone` using d.Credential.
-	return "", nil
+	return gitrepo.Ensure(ctx, gitrepo.EnsureOptions{
+		RepoURL:    d.RepoURL,
+		Credential: d.Credential,
+		CacheDir:   e.cfg.RepoCacheDir,
+	})
 }
 
 // Step 2: check out the Active Branch and configure the Sandbox's

@@ -21,6 +21,7 @@ type Config struct {
 	Concurrency    int
 	SandboxImage   string
 	CallbackSecret string
+	RepoCacheDir   string
 }
 
 func Load() (*Config, error) {
@@ -39,6 +40,7 @@ func Load() (*Config, error) {
 		Concurrency:    concurrency,
 		SandboxImage:   os.Getenv("JIFFY_SANDBOX_IMAGE"),
 		CallbackSecret: os.Getenv("JIFFY_CALLBACK_SECRET"),
+		RepoCacheDir:   os.Getenv("JIFFY_REPO_CACHE_DIR"),
 	}, nil
 }
 
