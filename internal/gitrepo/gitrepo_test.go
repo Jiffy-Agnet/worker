@@ -1,6 +1,9 @@
 package gitrepo
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCacheKey(t *testing.T) {
 	cases := []struct {
@@ -35,5 +38,12 @@ func TestRepoHost(t *testing.T) {
 func TestAuthArgsEmptyWithoutCredential(t *testing.T) {
 	if got := authArgs(EnsureOptions{RepoURL: "https://github.com/owner/repo.git"}); got != nil {
 		t.Errorf("authArgs with no credential = %v, want nil", got)
+	}
+}
+
+func TestCheckoutRequiresBranch(t *testing.T) {
+	err := Checkout(context.Background(), t.TempDir(), "https://github.com/owner/repo.git", "", "")
+	if err == nil {
+		t.Error("expected an error when branch is empty")
 	}
 }

@@ -60,3 +60,18 @@ func TestWriteTaskFilesNamesIncludeIssueID(t *testing.T) {
 		t.Errorf("promptFile = %q, want %q", promptFile, want)
 	}
 }
+
+func TestMergeSandboxEnv(t *testing.T) {
+	base := map[string]string{"FOO": "bar"}
+	got := mergeSandboxEnv(base, "develop")
+
+	if got["FOO"] != "bar" {
+		t.Errorf(`env["FOO"] = %q, want "bar"`, got["FOO"])
+	}
+	if got["JIFFY_ACTIVE_BRANCH"] != "develop" {
+		t.Errorf(`env["JIFFY_ACTIVE_BRANCH"] = %q, want "develop"`, got["JIFFY_ACTIVE_BRANCH"])
+	}
+	if _, mutated := base["JIFFY_ACTIVE_BRANCH"]; mutated {
+		t.Error("mergeSandboxEnv mutated the caller's base map")
+	}
+}

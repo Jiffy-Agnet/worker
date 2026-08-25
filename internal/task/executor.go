@@ -59,7 +59,8 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 		return e.reportFailure(ctx, d, fmt.Errorf("clone/update: %w", err))
 	}
 
-	if err := e.checkoutAndConfigure(ctx, repoDir, d); err != nil {
+	sandboxEnv, err := e.checkoutAndConfigure(ctx, repoDir, d)
+	if err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("branch/env setup: %w", err))
 	}
 
@@ -80,7 +81,7 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	result, err := sandbox.Run(ctx, sandbox.RunOptions{
 		Image:       d.SandboxImage,
 		RepoDir:     repoDir,
-		Env:         d.SandboxEnv,
+		Env:         sandboxEnv,
 		TaskFile:    taskFile,
 		PromptFile:  promptFile,
 		IssueID:     d.IssueID,
@@ -94,9 +95,11 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	return callback.Report(ctx, d.CallbackURL, result)
 }
 
-// Step 1: if the repo is already cloned locally, `git pull` it; otherwise
-// clone fresh using the short-lived credential from the descriptor. See
-// internal/gitrepo for the implementation.
+// Step 1: if the repo is already cloned locally, fetch its latest refs;
+// otherwise clone fresh using the short-lived credential from the
+// descriptor. Does not touch the working tree/branch — see Step 2
+// (checkoutAndConfigure) for that. See internal/gitrepo for the
+// implementation.
 func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, error) {
 	return gitrepo.Ensure(ctx, gitrepo.EnsureOptions{
 		RepoURL:    d.RepoURL,
@@ -107,9 +110,30 @@ func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, err
 
 // Step 2: check out the Active Branch and configure the Sandbox's
 // environment variables for this run.
-func (e *Executor) checkoutAndConfigure(ctx context.Context, repoDir string, d Descriptor) error {
-	// TODO: `git checkout d.ActiveBranch`; resolve d.SandboxEnv values.
-	return nil
+//
+// The Active Branch is expected to already exist on the remote (e.g.
+// "develop", or a branch from an earlier phase) — see internal/gitrepo,
+// which resets the working tree to match it exactly rather than guessing
+// a base for a brand-new branch. Creating a new branch for fresh work is
+// the code agent's own job, same as commit/push/PR creation.
+func (e *Executor) checkoutAndConfigure(ctx context.Context, repoDir string, d Descriptor) (map[string]string, error) {
+	if err := gitrepo.Checkout(ctx, repoDir, d.RepoURL, d.Credential, d.ActiveBranch); err != nil {
+		return nil, err
+	}
+	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch), nil
+}
+
+// mergeSandboxEnv layers well-known Worker-provided variables on top of
+// the descriptor's own SandboxEnv, without mutating the caller's map, so
+// the agent inside the sandbox knows which branch it's working from
+// (e.g. to base a new branch on, or to push back to).
+func mergeSandboxEnv(base map[string]string, activeBranch string) map[string]string {
+	env := make(map[string]string, len(base)+1)
+	for k, v := range base {
+		env[k] = v
+	}
+	env["JIFFY_ACTIVE_BRANCH"] = activeBranch
+	return env
 }
 
 // Step 3: write the task and system prompt to /tmp, named with the Issue

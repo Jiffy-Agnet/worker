@@ -1,7 +1,11 @@
-// Package gitrepo implements Step 1 of the Task execution flow (see
-// docs/adr/ADR-distributed-stateless-workers.md): if a repository is
-// already cloned locally from a previous run, update it in place with
-// `git pull`; otherwise clone it fresh.
+// Package gitrepo implements Steps 1 and 2 of the Task execution flow (see
+// docs/adr/ADR-distributed-stateless-workers.md):
+//
+//   - Ensure: if a repository is already cloned locally from a previous
+//     run, fetch its latest refs; otherwise clone it fresh.
+//   - Checkout: put the working tree into the exact state needed for the
+//     task's Active Branch, regardless of whatever branch a previous
+//     task left checked out in this cached clone.
 //
 // The short-lived credential passed in per task is never written to
 // .git/config or embedded in the remote URL. It is supplied as a
@@ -35,10 +39,15 @@ type EnsureOptions struct {
 	CacheDir string
 }
 
-// Ensure makes sure an up-to-date local clone of RepoURL exists on disk and
-// returns its path. A clone already present in the cache from a previous
-// task is reused and updated with `git pull`; otherwise a fresh clone is
-// made.
+// Ensure makes sure a local clone of RepoURL exists on disk with up to
+// date remote-tracking refs, and returns its path. A clone already
+// present in the cache from a previous task is reused; otherwise a fresh
+// clone is made.
+//
+// This intentionally does not touch the working tree or current branch:
+// the cache is keyed only by repo URL, so whatever branch a previous task
+// left checked out here has nothing to do with this task's Active
+// Branch. Use Checkout for that.
 func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 	if opts.RepoURL == "" {
 		return "", fmt.Errorf("gitrepo: repo URL is required")
@@ -52,8 +61,8 @@ func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 	dir := filepath.Join(cacheDir, cacheKey(opts.RepoURL))
 
 	if isGitRepo(dir) {
-		if err := pull(ctx, dir, opts); err != nil {
-			return "", fmt.Errorf("gitrepo: pull existing clone: %w", err)
+		if err := fetchAll(ctx, dir, opts); err != nil {
+			return "", fmt.Errorf("gitrepo: fetch existing clone: %w", err)
 		}
 		return dir, nil
 	}
@@ -67,6 +76,42 @@ func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 	return dir, nil
 }
 
+// Checkout fetches the given branch and resets dir's working tree to
+// exactly match its remote state (origin/branch), discarding any local
+// commits, modifications, or untracked files left over from a previous
+// task that reused this cached clone. The branch is expected to already
+// exist on the remote — Worker does not invent a new branch or guess a
+// base for one; creating a new branch for fresh work is the code agent's
+// own job, same as commit/push/PR creation.
+func Checkout(ctx context.Context, dir, repoURL, credential, branch string) error {
+	if branch == "" {
+		return fmt.Errorf("gitrepo: active branch is required")
+	}
+
+	opts := EnsureOptions{RepoURL: repoURL, Credential: credential}
+
+	fetchArgs := append(authArgs(opts), "-C", dir, "fetch", "origin", branch)
+	if err := run(ctx, fetchArgs...); err != nil {
+		return fmt.Errorf("gitrepo: fetch %s: %w", branch, err)
+	}
+
+	// -B creates the branch locally if it's new to this cache, or resets
+	// it if a previous task already had it; --force discards local
+	// modifications to tracked files that would otherwise block the
+	// switch.
+	if err := run(ctx, "-C", dir, "checkout", "-B", branch, "origin/"+branch, "--force"); err != nil {
+		return fmt.Errorf("gitrepo: checkout %s: %w", branch, err)
+	}
+
+	// checkout --force doesn't touch untracked/ignored files (e.g. build
+	// output from a previous task's run) — remove those too so every
+	// task starts from a genuinely clean tree.
+	if err := run(ctx, "-C", dir, "clean", "-fdx"); err != nil {
+		return fmt.Errorf("gitrepo: clean working tree: %w", err)
+	}
+	return nil
+}
+
 func isGitRepo(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil && info.IsDir()
@@ -77,13 +122,8 @@ func clone(ctx context.Context, dir string, opts EnsureOptions) error {
 	return run(ctx, args...)
 }
 
-func pull(ctx context.Context, dir string, opts EnsureOptions) error {
-	// TODO: if this fails because of local changes left over from an
-	// interrupted previous run, decide whether to `git reset --hard`
-	// before pulling. Not implemented yet — see Step 2 (branch checkout),
-	// which will also need to reconcile the working tree with the
-	// requested Active Branch.
-	args := append(authArgs(opts), "-C", dir, "pull", "--ff-only")
+func fetchAll(ctx context.Context, dir string, opts EnsureOptions) error {
+	args := append(authArgs(opts), "-C", dir, "fetch", "origin")
 	return run(ctx, args...)
 }
 
