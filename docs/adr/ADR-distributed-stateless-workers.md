@@ -23,7 +23,7 @@ Rewrite the Worker as a standalone, stateless Go service using asynq, connected 
 ### 2. Task execution flow
 
 1. **Clone or update:** if the target repository is already cloned locally from a previous run, `cd` into that directory and run `git pull` to fetch any new changes. Otherwise, clone fresh using the short-lived, narrowly-scoped credential and repository URL carried in the task descriptor.
-2. **Branch + environment setup:** check out the Active Branch, then configure the Sandbox's required config and environment variables for this run.
+2. **Environment setup:** configure the Sandbox's required config and environment variables for this run, including the Active Branch name. Switching to (or creating) the Active Branch, and opening the PR against it, are the code agent's own responsibility inside the sandbox, driven by the task and system prompt — Worker never runs `git checkout` itself.
 3. **Task + system prompt handoff via /tmp:** write the task description and the system prompt to separate files under `/tmp`, each named to include the Issue ID (e.g. `/tmp/jiffy-task-<issue_id>.md`, `/tmp/jiffy-prompt-<issue_id>.md`). The code agent reads the task and system prompt from these file paths instead of receiving them as CLI arguments or piped input, removing any length limit on task content.
 4. **Pre-setup / entrypoint script:** if the project defines a pre-setup or entrypoint script, run it inside the Sandbox first, before invoking the code agent.
 5. **Execute and report:** launch the code agent to perform the task; on completion, send the report back to the producer as a **callback**, not as a return value on the queue.
@@ -98,7 +98,7 @@ No separate Worker registration or heartbeat mechanism is introduced at this pha
 
 1. [ ] Define the Redis Stream task-descriptor JSON schema (repo URL, short-lived credential, Active Branch, Issue ID, callback URL, project/phase lock key, `schema_version`).
 2. [ ] Scaffold the standalone Go/asynq Worker repository.
-3. [ ] Implement the task execution flow (clone-or-pull, branch checkout, env/config setup, /tmp task+prompt handoff, pre-setup script, agent invocation, callback report).
+3. [ ] Implement the task execution flow (clone-or-fetch, env/config setup incl. Active Branch name, /tmp task+prompt handoff, pre-setup script, agent invocation, callback report).
 4. [ ] Re-scope the existing phase semaphore from global to per-project key.
 5. [ ] Add multi-arch (`buildx`) build step to the sandbox image CI pipeline.
 6. [ ] Harden Redis: TLS + auth for remote Worker connections.

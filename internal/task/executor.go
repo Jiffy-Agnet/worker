@@ -59,10 +59,7 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 		return e.reportFailure(ctx, d, fmt.Errorf("clone/update: %w", err))
 	}
 
-	sandboxEnv, err := e.checkoutAndConfigure(ctx, repoDir, d)
-	if err != nil {
-		return e.reportFailure(ctx, d, fmt.Errorf("branch/env setup: %w", err))
-	}
+	sandboxEnv := e.checkoutAndConfigure(d)
 
 	taskFile, promptFile, err := e.writeTaskFiles(d)
 	if err != nil {
@@ -108,19 +105,15 @@ func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, err
 	})
 }
 
-// Step 2: check out the Active Branch and configure the Sandbox's
-// environment variables for this run.
+// Step 2: configure the Sandbox's environment variables for this run.
 //
-// The Active Branch is expected to already exist on the remote (e.g.
-// "develop", or a branch from an earlier phase) — see internal/gitrepo,
-// which resets the working tree to match it exactly rather than guessing
-// a base for a brand-new branch. Creating a new branch for fresh work is
-// the code agent's own job, same as commit/push/PR creation.
-func (e *Executor) checkoutAndConfigure(ctx context.Context, repoDir string, d Descriptor) (map[string]string, error) {
-	if err := gitrepo.Checkout(ctx, repoDir, d.RepoURL, d.Credential, d.ActiveBranch); err != nil {
-		return nil, err
-	}
-	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch), nil
+// Switching to (or creating) the Active Branch — and everything after
+// that, commit/push/PR creation — is the code agent's own job inside the
+// sandbox, driven by the task and system prompt. Worker doesn't run git
+// checkout itself; it just makes sure the agent knows which branch it's
+// meant to be working with.
+func (e *Executor) checkoutAndConfigure(d Descriptor) map[string]string {
+	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch)
 }
 
 // mergeSandboxEnv layers well-known Worker-provided variables on top of
