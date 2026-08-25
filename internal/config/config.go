@@ -50,11 +50,13 @@ type Config struct {
 	SandboxContainerTTL time.Duration
 
 	// SandboxExtraEnv is a resolved list of "NAME=value" pairs forwarded
-	// into every sandbox container as-is — e.g. the LLM provider
-	// endpoint/key the code agent needs. Only variable *names* are
-	// configured (via SANDBOX_ENV_PASSTHROUGH, comma-separated); each
-	// value is read from Worker's own environment at startup, never
-	// duplicated into another variable.
+	// into every sandbox container as-is. Two are built in and entirely
+	// optional — OPEN_API_BASE_URL and OPEN_API_KEY, the LLM provider
+	// settings the code agent needs, forwarded automatically when set
+	// and simply omitted if not, no error either way. Anything else is
+	// configured via SANDBOX_ENV_PASSTHROUGH (comma-separated names);
+	// each value is read from Worker's own environment at startup,
+	// never duplicated into another variable.
 	SandboxExtraEnv []string
 }
 
@@ -70,9 +72,24 @@ func Load() (*Config, error) {
 	}
 
 	var extraEnv []string
+	seen := make(map[string]bool)
+	addEnv := func(name, value string) {
+		if value == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		extraEnv = append(extraEnv, name+"="+value)
+	}
+
+	// The LLM provider settings the code agent needs are optional and
+	// may be left unset entirely — forwarded automatically when present,
+	// no separate SANDBOX_ENV_PASSTHROUGH entry required for these two.
+	addEnv("OPEN_API_BASE_URL", os.Getenv("OPEN_API_BASE_URL"))
+	addEnv("OPEN_API_KEY", os.Getenv("OPEN_API_KEY"))
+
 	for _, name := range splitAndTrim(os.Getenv("SANDBOX_ENV_PASSTHROUGH")) {
 		if v, ok := os.LookupEnv(name); ok {
-			extraEnv = append(extraEnv, name+"="+v)
+			addEnv(name, v)
 		}
 	}
 
