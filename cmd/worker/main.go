@@ -16,6 +16,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	for _, warning := range cfg.SecurityWarnings() {
+		log.Printf("WARNING: %s", warning)
+	}
 
 	// asynq handles local execution concurrency and retries, once a
 	// message has been bridged in from the shared Redis Stream — see

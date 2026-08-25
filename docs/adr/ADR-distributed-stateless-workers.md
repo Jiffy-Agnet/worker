@@ -44,8 +44,7 @@ Notably, there is **no** active-branch, sandbox-image, or system-prompt field in
 
 1. **Clone or prepare working copy:** maintain one shared, local *mirror* clone per repository, updated via `git fetch` on every task (never a `git pull` into a working tree — the mirror has no working tree). From that local mirror, clone a fresh, fully isolated working copy for this task alone, point its `origin` at the real repository URL, and configure the push/pull credential (`repo.username` + `repo.token`) directly into *that* working copy's `.git/config` — since it is single-task and gets deleted afterward, this is safe, and it means the code agent can run plain `git push`/`git pull` without ever having to handle the token itself. Concurrent tasks on the same repository each get their own working copy this way — one task's checkout, changes, or failure can never touch another's. The working copy is removed once the task finishes.
 2. **Task file:** compose the task content from `issue.text` followed by `issue.turns` (in order), and write it to `/tmp/jiffy-task-<external_issue_id>.md`. The code agent reads the task from this file path instead of receiving it as a CLI argument or piped input, removing any length limit on task content. There is no separate system-prompt file: project-specific agent instructions live in the repository's own `AGENTS.md`, which the agent reads directly from the mounted working copy at `/workspace` — Worker never copies or duplicates it. Branch selection (switching to, or creating, a branch) and everything after that — commits, push, PR creation — is entirely the code agent's own job, driven by the task content and `AGENTS.md`.
-3. **Pre-setup / entrypoint script:** if the project defines a pre-setup or entrypoint script, run it inside the Sandbox first, before invoking the code agent.
-4. **Execute and report:** launch the code agent to perform the task; on completion, send the report back to the producer as a **callback** to `callback.url`, authenticated with `callback.secret` — not as a return value on the queue.
+3. **Execute and report:** launch the code agent to perform the task; on completion, send the report back to the producer as a **callback** to `callback.url`, authenticated with `callback.secret` — not as a return value on the queue. A project's pre-setup/entrypoint script, if it has one, runs *inside* the sandbox before the agent starts — this is the sandbox image's own entrypoint's job, not Worker's; Worker only mounts the repo and launches the container.
 
 The sandbox image itself is a Worker-level default (`JIFFY_SANDBOX_IMAGE`, see internal/config), not part of the per-task payload.
 
@@ -160,10 +159,10 @@ Carried over from the previous sandbox implementation's configuration surface:
 
 1. [x] Confirm the task descriptor schema with the producer team (repo/issue/callback, as documented above).
 2. [x] Scaffold the standalone Go/asynq Worker repository.
-3. [x] Implement the task execution flow (clone-or-fetch + isolated working copy + git credential config, task file composition, pre-setup script, agent invocation, callback report).
+3. [x] Implement the task execution flow (clone-or-fetch + isolated working copy + git credential config, task file composition, agent invocation, callback report). Pre-setup/entrypoint scripts run inside the sandbox image's own entrypoint, not in Worker.
 4. [ ] Re-scope the existing phase semaphore from global to per-project key (producer/Orchestrator side).
 5. [ ] Add multi-arch (`buildx`) build step to the sandbox image CI pipeline.
-6. [ ] Harden Redis: TLS + auth for remote Worker connections.
+6. [x] Harden Redis: TLS + password already supported (`REDIS_TLS`, `REDIS_PASSWORD`); added `Config.SecurityWarnings()`, logged at startup, flagging a non-local `REDIS_ADDR` used without TLS and/or without a password.
 7. [ ] Implement sibling-PR conflict resolution in the Orchestrator, with Human Review tagging as fallback.
 8. [x] Implement the actual HTTP callback (`internal/callback`), signing requests with `callback.secret` (sent as a Bearer token).
 9. [x] Callback delivery retry: local retries with backoff, then durable hand-off via `FAILED_CALLBACK_STREAM` (see "Callback delivery failure"). Still open: whole-task retry policy (asynq `MaxRetry`) for failures elsewhere in the flow (clone, sandbox run, etc.).

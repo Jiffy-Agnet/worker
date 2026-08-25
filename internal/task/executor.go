@@ -97,10 +97,6 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	}
 	defer os.Remove(taskFile)
 
-	if err := e.runPreSetupScript(ctx, repoDir, d); err != nil {
-		return e.reportFailure(ctx, d, fmt.Errorf("pre-setup script: %w", err))
-	}
-
 	result, err := sandbox.Run(ctx, sandbox.RunOptions{
 		Image:           e.cfg.SandboxImage,
 		RepoDir:         repoDir,
@@ -179,14 +175,6 @@ func composeTaskText(issue IssueInfo) string {
 		}
 	}
 	return b.String()
-}
-
-// Step 3: run the project's pre-setup/entrypoint script inside the
-// sandbox, if one exists, before the agent starts.
-func (e *Executor) runPreSetupScript(ctx context.Context, repoDir string, d Descriptor) error {
-	// TODO: look for a conventional path (e.g. .jiffy/pre-setup.sh) inside
-	// repoDir and run it inside the sandbox if present.
-	return nil
 }
 
 func (e *Executor) reportFailure(ctx context.Context, d Descriptor, cause error) error {

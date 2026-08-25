@@ -5,6 +5,7 @@ package config
 
 import (
 	"crypto/tls"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -147,6 +148,42 @@ func (c *Config) RedisTLSConfig() *tls.Config {
 		return nil
 	}
 	return &tls.Config{}
+}
+
+// SecurityWarnings flags configuration that looks unsafe for a
+// non-local deployment — connecting to a remote Redis without TLS
+// and/or without a password. Task descriptors carry short-lived git
+// credentials and callback secrets, so an unencrypted or unauthenticated
+// connection to a Redis instance reachable from outside the host is a
+// real exposure, not just a style nit. This never blocks startup; the
+// caller decides what to do with the warnings (typically just logging).
+func (c *Config) SecurityWarnings() []string {
+	var warnings []string
+	if isLocalAddr(c.RedisAddr) {
+		return warnings
+	}
+	if !c.RedisTLS {
+		warnings = append(warnings, "REDIS_TLS is disabled while REDIS_ADDR does not look like a local address — task descriptors (including credentials) will cross the network in the clear")
+	}
+	if c.RedisPassword == "" {
+		warnings = append(warnings, "REDIS_PASSWORD is not set while REDIS_ADDR does not look like a local address — anyone who can reach this Redis can read or write tasks and callbacks")
+	}
+	return warnings
+}
+
+func isLocalAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	switch host {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func getenv(key, fallback string) string {
