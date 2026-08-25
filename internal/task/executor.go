@@ -58,6 +58,10 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return e.reportFailure(ctx, d, fmt.Errorf("clone/update: %w", err))
 	}
+	// This is a fresh clone made just for this one task (see
+	// cloneOrUpdate) — remove it once we're done regardless of outcome,
+	// so it never lingers or gets confused with another task's copy.
+	defer os.RemoveAll(repoDir)
 
 	sandboxEnv := e.checkoutAndConfigure(d)
 
@@ -92,17 +96,31 @@ func (e *Executor) HandleAsynqTask(ctx context.Context, t *asynq.Task) error {
 	return callback.Report(ctx, d.CallbackURL, result)
 }
 
-// Step 1: if the repo is already cloned locally, fetch its latest refs;
-// otherwise clone fresh using the short-lived credential from the
-// descriptor. Does not touch the working tree/branch — see Step 2
-// (checkoutAndConfigure) for that. See internal/gitrepo for the
-// implementation.
+// Step 1: make sure a shared, up-to-date mirror of the repo exists
+// locally (fetching it if already cached), then clone a fresh, isolated
+// working copy for this task alone from that local mirror. Concurrent
+// tasks on the same repository never share a working directory this way
+// — one task's checkout, changes, or failure can never touch another's.
+// See internal/gitrepo for the implementation.
 func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, error) {
-	return gitrepo.Ensure(ctx, gitrepo.EnsureOptions{
+	cacheDir, err := gitrepo.Ensure(ctx, gitrepo.EnsureOptions{
 		RepoURL:    d.RepoURL,
 		Credential: d.Credential,
 		CacheDir:   e.cfg.RepoCacheDir,
 	})
+	if err != nil {
+		return "", err
+	}
+
+	workDir, err := os.MkdirTemp("", "jiffy-worker-task-*")
+	if err != nil {
+		return "", fmt.Errorf("prepare task working copy: %w", err)
+	}
+	if err := gitrepo.NewWorkingCopy(ctx, cacheDir, d.RepoURL, workDir); err != nil {
+		_ = os.RemoveAll(workDir)
+		return "", err
+	}
+	return workDir, nil
 }
 
 // Step 2: configure the Sandbox's environment variables for this run.
@@ -110,22 +128,21 @@ func (e *Executor) cloneOrUpdate(ctx context.Context, d Descriptor) (string, err
 // Switching to (or creating) the Active Branch — and everything after
 // that, commit/push/PR creation — is the code agent's own job inside the
 // sandbox, driven by the task and system prompt. Worker doesn't run git
-// checkout itself; it just makes sure the agent knows which branch it's
-// meant to be working with.
+// checkout itself; it just makes sure the agent has what it needs to do
+// that: which branch to work with, and the credential to push with.
 func (e *Executor) checkoutAndConfigure(d Descriptor) map[string]string {
-	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch)
+	return mergeSandboxEnv(d.SandboxEnv, d.ActiveBranch, d.Credential)
 }
 
 // mergeSandboxEnv layers well-known Worker-provided variables on top of
-// the descriptor's own SandboxEnv, without mutating the caller's map, so
-// the agent inside the sandbox knows which branch it's working from
-// (e.g. to base a new branch on, or to push back to).
-func mergeSandboxEnv(base map[string]string, activeBranch string) map[string]string {
-	env := make(map[string]string, len(base)+1)
+// the descriptor's own SandboxEnv, without mutating the caller's map.
+func mergeSandboxEnv(base map[string]string, activeBranch, credential string) map[string]string {
+	env := make(map[string]string, len(base)+2)
 	for k, v := range base {
 		env[k] = v
 	}
 	env["JIFFY_ACTIVE_BRANCH"] = activeBranch
+	env["JIFFY_GIT_CREDENTIAL"] = credential
 	return env
 }
 

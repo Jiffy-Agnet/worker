@@ -1,13 +1,20 @@
 // Package gitrepo implements Step 1 of the Task execution flow (see
-// docs/adr/ADR-distributed-stateless-workers.md): if a repository is
-// already cloned locally from a previous run, fetch its latest refs;
-// otherwise clone it fresh.
+// docs/adr/ADR-distributed-stateless-workers.md).
+//
+// Two-layer design:
+//   - Ensure keeps one shared *mirror* clone per repository URL on disk,
+//     updated via `git fetch`. It has no working tree of its own — it
+//     exists purely so later per-task clones are fast and don't need to
+//     re-download the repository's full history every time.
+//   - NewWorkingCopy clones a fresh, fully independent working directory
+//     for a single task, sourced from that local mirror (no network
+//     needed). Concurrent tasks on the same repository never share a
+//     working directory this way, so one task's checkout, changes, or
+//     failure can never touch another's.
 //
 // Switching to (or creating) the Active Branch, and everything after
 // that — commits, push, PR creation — is the code agent's own job inside
-// the sandbox, driven by the task and system prompt. This package only
-// makes sure a local copy of the repository exists on disk; it never
-// touches the working tree or checks out a specific branch.
+// the sandbox, driven by the task and system prompt.
 //
 // The short-lived credential passed in per task is never written to
 // .git/config or embedded in the remote URL. It is supplied as a
@@ -36,19 +43,14 @@ type EnsureOptions struct {
 	// Credential is a short-lived, narrowly-scoped access token (e.g. a
 	// GitHub App installation token). Never persisted to disk.
 	Credential string
-	// CacheDir is the base directory under which repositories are cached
-	// between tasks. Optional — defaults to a subdirectory of os.TempDir().
+	// CacheDir is the base directory under which the shared mirror is
+	// cached between tasks. Optional — defaults to a subdirectory of
+	// os.TempDir().
 	CacheDir string
 }
 
-// Ensure makes sure a local clone of RepoURL exists on disk with up to
-// date remote-tracking refs, and returns its path. A clone already
-// present in the cache from a previous task is reused; otherwise a fresh
-// clone is made.
-//
-// This never checks out a specific branch or touches the working tree —
-// the code agent inside the sandbox does that itself, per the task and
-// system prompt.
+// Ensure makes sure a local *mirror* clone of RepoURL exists on disk,
+// up to date with all remote refs, and returns its path.
 func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 	if opts.RepoURL == "" {
 		return "", fmt.Errorf("gitrepo: repo URL is required")
@@ -61,9 +63,9 @@ func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 
 	dir := filepath.Join(cacheDir, cacheKey(opts.RepoURL))
 
-	if isGitRepo(dir) {
+	if isMirror(dir) {
 		if err := fetchAll(ctx, dir, opts); err != nil {
-			return "", fmt.Errorf("gitrepo: fetch existing clone: %w", err)
+			return "", fmt.Errorf("gitrepo: fetch existing mirror: %w", err)
 		}
 		return dir, nil
 	}
@@ -71,19 +73,37 @@ func Ensure(ctx context.Context, opts EnsureOptions) (string, error) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return "", fmt.Errorf("gitrepo: prepare cache dir: %w", err)
 	}
-	if err := clone(ctx, dir, opts); err != nil {
-		return "", fmt.Errorf("gitrepo: clone: %w", err)
+	if err := cloneMirror(ctx, dir, opts); err != nil {
+		return "", fmt.Errorf("gitrepo: mirror clone: %w", err)
 	}
 	return dir, nil
 }
 
-func isGitRepo(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil && info.IsDir()
+// NewWorkingCopy creates a fresh, isolated local clone at dir, sourced
+// from the shared mirror cache rather than the network — fast, and no
+// credential needed for this step. origin is then repointed at the real
+// repoURL (the mirror is purely a local optimization) so the code agent
+// can push its work to the actual remote. The caller owns dir and should
+// remove it once the task is done.
+func NewWorkingCopy(ctx context.Context, cacheDir, repoURL, dir string) error {
+	if err := run(ctx, "clone", cacheDir, dir); err != nil {
+		return fmt.Errorf("gitrepo: create working copy: %w", err)
+	}
+	if err := run(ctx, "-C", dir, "remote", "set-url", "origin", repoURL); err != nil {
+		return fmt.Errorf("gitrepo: point working copy at real remote: %w", err)
+	}
+	return nil
 }
 
-func clone(ctx context.Context, dir string, opts EnsureOptions) error {
-	args := append(authArgs(opts), "clone", opts.RepoURL, dir)
+// isMirror reports whether dir looks like a bare/mirror repository (a
+// HEAD file directly at its root, rather than a .git subdirectory).
+func isMirror(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "HEAD"))
+	return err == nil && !info.IsDir()
+}
+
+func cloneMirror(ctx context.Context, dir string, opts EnsureOptions) error {
+	args := append(authArgs(opts), "clone", "--mirror", opts.RepoURL, dir)
 	return run(ctx, args...)
 }
 
@@ -115,7 +135,8 @@ func repoHost(repoURL string) string {
 }
 
 // cacheKey derives a filesystem-safe, stable directory name from a repo
-// URL so repeated tasks against the same repository reuse the same clone.
+// URL so repeated tasks against the same repository reuse the same
+// mirror cache.
 func cacheKey(repoURL string) string {
 	trimmed := strings.TrimSuffix(repoURL, ".git")
 	if u, err := url.Parse(trimmed); err == nil && u.Path != "" {

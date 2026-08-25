@@ -1,6 +1,10 @@
 package gitrepo
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestCacheKey(t *testing.T) {
 	cases := []struct {
@@ -35,5 +39,18 @@ func TestRepoHost(t *testing.T) {
 func TestAuthArgsEmptyWithoutCredential(t *testing.T) {
 	if got := authArgs(EnsureOptions{RepoURL: "https://github.com/owner/repo.git"}); got != nil {
 		t.Errorf("authArgs with no credential = %v, want nil", got)
+	}
+}
+
+func TestIsMirror(t *testing.T) {
+	dir := t.TempDir()
+	if isMirror(dir) {
+		t.Error("an empty dir should not look like a mirror")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isMirror(dir) {
+		t.Error("a dir with a HEAD file should look like a mirror")
 	}
 }

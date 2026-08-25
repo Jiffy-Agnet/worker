@@ -10,6 +10,8 @@ Development throughput is currently limited by single-machine execution capacity
 
 This ADR builds on the existing Scheduled Phase Execution ADR, which introduced a Redis-based semaphore to serialize phase execution, and on the existing no-autonomous-task-selection principle: a new phase/subtask may only start without a fresh human trigger when that chain was already explicitly started by a human for a specific project — never for unrelated, newly-selected Issues.
 
+Ordering of dependent tasks (e.g. task 2 must not start before task 1 finishes) is out of scope for this repository: it is enforced by not publishing task 2's descriptor onto the Redis Stream until task 1 completes. Worker never sees a task before it is meant to run, so it needs no dependency-checking logic of its own.
+
 ## Decision
 
 Rewrite the Worker as a standalone, stateless Go service using asynq, connected to the task producer through a standard, tool-independent Redis protocol.
@@ -17,13 +19,13 @@ Rewrite the Worker as a standalone, stateless Go service using asynq, connected 
 ### 1. Worker: standalone Go binary, fully stateless
 
 - Separate repository/binary, cross-compiled for Linux/macOS/Windows and amd64/arm64 — deployable on a VPS, a spare laptop, or a Raspberry Pi.
-- Holds no database and no state between tasks, other than an optional local filesystem cache of previously-cloned repositories (a performance optimization only — no queue or business state is retained).
+- Holds no database and no long-lived state between tasks, other than a shared local mirror clone per repository (a performance cache only — see item 2, step 1). Each task's actual working copy is a fresh, isolated clone that is removed once the task finishes.
 - Capacity is added simply by starting another Worker instance anywhere with Docker and network access to Redis.
 
 ### 2. Task execution flow
 
-1. **Clone or update:** if the target repository is already cloned locally from a previous run, `cd` into that directory and run `git pull` to fetch any new changes. Otherwise, clone fresh using the short-lived, narrowly-scoped credential and repository URL carried in the task descriptor.
-2. **Environment setup:** configure the Sandbox's required config and environment variables for this run, including the Active Branch name. Switching to (or creating) the Active Branch, and opening the PR against it, are the code agent's own responsibility inside the sandbox, driven by the task and system prompt — Worker never runs `git checkout` itself.
+1. **Clone or update:** maintain one shared, local *mirror* clone per repository, updated via `git fetch` on every task (never a `git pull` into a working tree — the mirror has no working tree). From that local mirror, clone a fresh, fully isolated working copy for this task alone, then point its `origin` at the real repository URL so the code agent can push to it. Concurrent tasks on the same repository each get their own working copy this way — one task's checkout, changes, or failure can never touch another's. The working copy is removed once the task finishes.
+2. **Environment setup:** configure the Sandbox's required config and environment variables for this run, including the Active Branch name and the short-lived credential. The code agent uses these to `git pull` on its own branch, switch to (or create) the Active Branch, and later push and open a PR — none of that is something Worker does via git itself.
 3. **Task + system prompt handoff via /tmp:** write the task description and the system prompt to separate files under `/tmp`, each named to include the Issue ID (e.g. `/tmp/jiffy-task-<issue_id>.md`, `/tmp/jiffy-prompt-<issue_id>.md`). The code agent reads the task and system prompt from these file paths instead of receiving them as CLI arguments or piped input, removing any length limit on task content.
 4. **Pre-setup / entrypoint script:** if the project defines a pre-setup or entrypoint script, run it inside the Sandbox first, before invoking the code agent.
 5. **Execute and report:** launch the code agent to perform the task; on completion, send the report back to the producer as a **callback**, not as a return value on the queue.
